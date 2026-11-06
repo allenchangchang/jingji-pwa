@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "entries": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "kind": "expense",
+      "cents": 200000,
+      "day": "2026-09-20",
+      "title": "旅游",
+      "category": "旅行",
+      "channel": "其他",
+      "note": "PWA 与原生共用夹具",
+      "countsAsExpense": false,
+      "subentries": [
+        { "id": "10000000-0000-4000-8000-000000000002", "title": "酒店", "cents": 100000, "note": "" },
+        { "id": "10000000-0000-4000-8000-000000000003", "title": "租车", "cents": 100000, "note": "" }
+      ]
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "kind": "refund",
+      "cents": 50000,
+      "day": "2026-10-02",
+      "title": "酒店退款",
+      "category": "旅行",
+      "channel": "其他",
+      "note": "",
+      "countsAsExpense": false,
+      "originalID": "10000000-0000-4000-8000-000000000001"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000005",
+      "kind": "income",
+      "cents": 1500000,
+      "day": "2026-09-28",
+      "title": "工资",
+      "category": "工资",
+      "channel": "银行卡",
+      "note": "",
+      "countsAsExpense": false
+    }
+  ]
+}

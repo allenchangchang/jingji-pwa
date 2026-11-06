@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#196e5d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="净记">
+  <meta name="description" content="本地、离线、只看真正花掉的钱">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./styles.css">
+  <title>净记</title>
+</head>
+<body>
+  <div id="offline-banner" class="offline-banner" hidden>当前离线，记账仍可正常使用</div>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">本地离线账本</p>
+      <h1>净记</h1>
+    </div>
+    <button id="settings-button" class="icon-button" aria-label="设置、备份与安装">⚙︎</button>
+  </header>
+
+  <main>
+    <section class="period-bar" aria-label="统计周期">
+      <button id="previous-month" class="plain-button" aria-label="上个月">‹</button>
+      <button id="period-button" class="period-button"><span id="period-title"></span><span aria-hidden="true"> ▾</span></button>
+      <button id="next-month" class="plain-button" aria-label="下个月">›</button>
+    </section>
+
+    <section class="summary-card consumption-card">
+      <p class="card-label">所选周期净消费</p>
+      <p id="net-amount" class="hero-amount">¥0.00</p>
+      <p class="card-caption">只看真正花掉的钱</p>
+      <dl class="summary-lines">
+        <div><dt>消费</dt><dd id="purchase-amount">¥0.00</dd></div>
+        <div><dt>已关联退款</dt><dd id="refund-amount">−¥0.00</dd></div>
+        <div id="marked-transfer-line" hidden><dt>计入消费的转出</dt><dd id="marked-transfer-amount">+¥0.00</dd></div>
+        <div id="recovery-line" hidden><dt>对应收回款</dt><dd id="recovery-amount">−¥0.00</dd></div>
+      </dl>
+      <p class="fine-print">按原消费日期归属，包含后来到账的退款与收回款。</p>
+    </section>
+
+    <section class="summary-card income-card">
+      <div class="card-heading-row"><p class="card-label">本期收入</p><button id="show-income" class="text-button">查看流水</button></div>
+      <p id="income-amount" class="section-amount">¥0.00</p>
+      <p class="card-caption">工资、奖金等单独统计；转入和退款不计收入。</p>
+    </section>
+
+    <section id="categories-card" class="panel" hidden>
+      <h2>花在哪里</h2>
+      <div id="category-list"></div>
+    </section>
+
+    <section class="records-section">
+      <div class="section-heading">
+        <h2>账单流水</h2>
+        <select id="record-filter" aria-label="筛选交易类型">
+          <option value="consumption">消费与退款</option>
+          <option value="all">全部</option>
+          <option value="transfers">转账往来</option>
+          <option value="expense">仅消费</option>
+          <option value="income">仅收入</option>
+          <option value="refund">仅退款</option>
+          <option value="transferOut">仅转出</option>
+          <option value="transferIn">仅转入</option>
+        </select>
+      </div>
+      <label class="search-box"><span aria-hidden="true">⌕</span><input id="search-input" type="search" placeholder="搜索名称、子账单、备注或渠道" autocomplete="off"></label>
+      <p class="section-note">筛选和搜索只改变流水，不改变上方统计。</p>
+      <div id="record-list"></div>
+      <div id="empty-state" class="empty-state" hidden>
+        <div class="empty-icon">✎</div>
+        <h3 id="empty-title">从第一笔开始，记清每一分</h3>
+        <p id="empty-text">收入、消费和往来分开记，净消费自动算。</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="bottom-bar"><button id="add-entry" class="primary-button">＋ 记一笔</button></div>
+
+  <dialog id="entry-dialog" class="sheet-dialog">
+    <form id="entry-form" novalidate>
+      <header class="dialog-header"><button type="button" data-close="entry-dialog" class="text-button">取消</button><h2 id="entry-dialog-title">记一笔</h2><button type="submit" class="text-button strong">保存</button></header>
+      <div class="dialog-body">
+        <fieldset class="kind-picker">
+          <legend class="sr-only">类型</legend>
+          <label><input type="radio" name="kind" value="expense" checked><span>消费</span></label>
+          <label><input type="radio" name="kind" value="income"><span>收入</span></label>
+          <label><input type="radio" name="kind" value="refund"><span>退款</span></label>
+          <label><input type="radio" name="kind" value="transferOut"><span>转出</span></label>
+          <label><input type="radio" name="kind" value="transferIn"><span>转入</span></label>
+        </fieldset>
+
+        <section class="form-card amount-card">
+          <label for="entry-amount">金额</label>
+          <div class="amount-input"><span>¥</span><input id="entry-amount" name="amount" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-describedby="refund-default-hint"></div>
+          <p id="refund-default-hint" class="hint" hidden></p>
+        </section>
+
+        <section class="form-card form-grid">
+          <label>名称<input id="entry-title" name="title" maxlength="80" required placeholder="必填"></label>
+          <label>发生日期<input id="entry-day" name="day" type="date" min="1900-01-01" max="2199-12-31" required></label>
+          <label>渠道<select id="entry-channel" name="channel"></select></label>
+          <label id="category-row">分类<select id="entry-category" name="category"></select></label>
+          <label id="counts-row" class="toggle-row" hidden><span><strong>计入我的消费</strong><small>普通往来保持关闭；用于付款时打开</small></span><input id="counts-as-expense" name="countsAsExpense" type="checkbox"></label>
+        </section>
+
+        <section id="relation-card" class="form-card form-grid" hidden>
+          <label id="original-label">关联原记录<select id="entry-original" name="originalID"></select></label>
+          <p id="original-summary" class="hint"></p>
+        </section>
+
+        <section class="form-card details-card">
+          <div class="card-heading-row"><div><h3>子账单</h3><p class="hint">拆分说明，不重复计入统计</p></div><button id="add-detail" type="button" class="text-button">＋ 添加</button></div>
+          <div id="detail-editor-list"></div>
+          <dl id="detail-totals" class="detail-totals" hidden><div><dt>已分配</dt><dd id="allocated-amount">¥0.00</dd></div><div><dt>未分配</dt><dd id="unallocated-amount">¥0.00</dd></div></dl>
+        </section>
+
+        <section class="form-card"><label>备注<textarea id="entry-note" name="note" maxlength="1000" rows="3" placeholder="可选"></textarea></label></section>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="detail-dialog" class="sheet-dialog">
+    <div class="dialog-header"><button type="button" data-close="detail-dialog" class="text-button">返回</button><h2>记录详情</h2><span></span></div>
+    <div id="entry-detail" class="dialog-body"></div>
+  </dialog>
+
+  <dialog id="period-dialog" class="sheet-dialog compact-dialog">
+    <form id="period-form">
+      <div class="dialog-header"><button type="button" data-close="period-dialog" class="text-button">取消</button><h2>选择周期</h2><button class="text-button strong" type="submit">应用</button></div>
+      <div class="dialog-body"><section class="form-card form-grid"><label>开始日期<input id="period-start" type="date" required></label><label>结束日期<input id="period-end" type="date" required></label><button id="use-this-month" type="button" class="secondary-button">本月</button><button id="use-last-month" type="button" class="secondary-button">上月</button></section></div>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog" class="sheet-dialog">
+    <div class="dialog-header"><button type="button" data-close="settings-dialog" class="text-button">完成</button><h2>设置</h2><span></span></div>
+    <div class="dialog-body">
+      <section class="form-card"><h3>数据与备份</h3><p id="storage-status" class="hint">账本只保存在此设备。</p><div class="button-stack"><button id="export-backup" class="secondary-button">导出 JSON 备份</button><button id="import-backup" class="secondary-button">从原生版或 PWA 备份恢复</button><button id="restore-previous" class="secondary-button" hidden>恢复上次导入前账本</button></div><input id="backup-file" type="file" accept="application/json,.json" hidden></section>
+      <section class="form-card"><h3>安装到 iPhone</h3><ol class="install-steps"><li>用 Safari 打开已部署的网址。</li><li>点 Safari 的“分享”。</li><li>选择“添加到主屏幕”，打开“作为网页 App 打开”。</li><li>添加后从桌面启动；离线也能记账。</li></ol><button id="install-button" class="primary-button" hidden>安装净记</button><p class="hint">PWA 没有 7 天签名限制。浏览器数据仍可能因卸载或系统清理而丢失，请定期导出备份。</p></section>
+      <section class="form-card"><h3>统计规则</h3><p>净消费 = 消费 − 退款 + 计入消费的转出 − 对应收回款。收入单独汇总；子账单只拆分主金额。</p></section>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

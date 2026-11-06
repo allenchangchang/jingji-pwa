@@ -1,0 +1,17 @@
+{
+  "id": "./",
+  "name": "净记 · 本地记账",
+  "short_name": "净记",
+  "description": "只看真正花掉的钱，本地离线记账",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f5f4",
+  "theme_color": "#196e5d",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
