@@ -69,6 +69,7 @@
           <option value="transferIn">仅转入</option>
         </select>
       </div>
+      <div class="bill-toolbar"><button id="select-bills" type="button" class="text-button">选择账单合并</button><span id="merge-status" class="hint" hidden></span><button id="merge-selected" type="button" class="text-button strong" hidden disabled>合并所选</button><button id="cancel-selection" type="button" class="text-button" hidden>取消</button></div>
       <label class="search-box"><span aria-hidden="true">⌕</span><input id="search-input" type="search" placeholder="搜索名称、子账单、备注或渠道" autocomplete="off"></label>
       <p class="section-note">筛选和搜索只改变流水，不改变上方统计。</p>
       <div id="record-list"></div>
@@ -100,7 +101,10 @@
           <label for="entry-amount">金额</label>
           <div class="amount-input"><span>¥</span><input id="entry-amount" name="amount" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-describedby="refund-default-hint"></div>
           <p id="refund-default-hint" class="hint" hidden></p>
+          <button id="enable-multi" type="button" class="text-button">连续输入多笔金额</button>
         </section>
+
+        <section id="parts-card" class="form-card" hidden><h3>逐笔输入，自动合计</h3><p class="hint">每笔可填写名称；保存后组成一张父账单。</p><div id="parts-list"></div><button id="add-amount-part" type="button" class="text-button">＋ 再输入一笔金额</button><p id="parts-total" class="hint" aria-live="polite"></p></section>
 
         <section class="form-card form-grid">
           <label>名称<input id="entry-title" name="title" maxlength="80" required placeholder="必填"></label>
@@ -115,7 +119,7 @@
           <p id="original-summary" class="hint"></p>
         </section>
 
-        <section class="form-card details-card">
+        <section id="legacy-details-card" class="form-card details-card">
           <div class="card-heading-row"><div><h3>子账单</h3><p class="hint">拆分说明，不重复计入统计</p></div><button id="add-detail" type="button" class="text-button">＋ 添加</button></div>
           <div id="detail-editor-list"></div>
           <dl id="detail-totals" class="detail-totals" hidden><div><dt>已分配</dt><dd id="allocated-amount">¥0.00</dd></div><div><dt>未分配</dt><dd id="unallocated-amount">¥0.00</dd></div></dl>
@@ -127,9 +131,13 @@
   </dialog>
 
   <dialog id="detail-dialog" class="sheet-dialog">
-    <div class="dialog-header"><button type="button" data-close="detail-dialog" class="text-button">返回</button><h2>记录详情</h2><span></span></div>
+    <div class="dialog-header"><button id="detail-back" type="button" class="text-button">返回</button><h2>账单详情</h2><span></span></div>
     <div id="entry-detail" class="dialog-body"></div>
   </dialog>
+
+  <dialog id="merge-dialog" class="sheet-dialog compact-dialog"><form id="merge-form"><div class="dialog-header"><button type="button" data-close="merge-dialog" class="text-button">取消</button><h2>合并账单</h2><button type="submit" class="text-button strong">合并</button></div><div class="dialog-body"><section class="form-card form-grid"><label>父账单名称<input id="merge-title" maxlength="80" required placeholder="例如旅行"></label><p id="merge-description" class="hint"></p></section></div></form></dialog>
+
+  <dialog id="refund-dialog" class="sheet-dialog"><div class="dialog-header"><button type="button" data-close="refund-dialog" class="text-button">取消</button><h2>退款子账单目录</h2><span></span></div><div class="dialog-body"><p id="refund-directory-caption" class="hint"></p><div id="refund-directory" class="button-stack"></div></div></dialog>
 
   <dialog id="period-dialog" class="sheet-dialog compact-dialog">
     <form id="period-form">
@@ -141,9 +149,10 @@
   <dialog id="settings-dialog" class="sheet-dialog">
     <div class="dialog-header"><button type="button" data-close="settings-dialog" class="text-button">完成</button><h2>设置</h2><span></span></div>
     <div class="dialog-body">
-      <section class="form-card"><h3>数据与备份</h3><p id="storage-status" class="hint">账本只保存在此设备。</p><p class="hint">迁移旧记录：原生净记 → 设置 → 导出账本备份，保存到“文件”；再在这里选择该 JSON。导入成功后会展示全部日期和类型的记录。</p><div class="button-stack"><button id="export-backup" class="secondary-button">导出 JSON 备份</button><button id="import-backup" class="secondary-button">从原生版或 PWA 备份恢复</button><button id="restore-previous" class="secondary-button" hidden>恢复上次导入前账本</button></div><input id="backup-file" type="file" accept="application/json,.json" hidden></section>
+      <section class="form-card"><h3>数据与备份</h3><p id="storage-status" class="hint">账本只保存在此设备。</p><p class="hint">旧版 v1/v2 JSON 仍可导入。新备份完整保存多级账单，旧原生版无法读取；首次保存新账本前会保留升级前副本。</p><p class="hint">迁移旧记录：原生净记 → 设置 → 导出账本备份，保存到“文件”；再在这里选择该 JSON。导入成功后会展示全部日期和类型的记录。</p><div class="button-stack"><button id="export-backup" class="secondary-button">导出 JSON 备份</button><button id="import-backup" class="secondary-button">从原生版或 PWA 备份恢复</button><button id="restore-previous" class="secondary-button" hidden>恢复上次导入前账本</button><button id="export-before-upgrade" class="secondary-button" hidden>导出多级升级前的账本</button></div><input id="backup-file" type="file" accept="application/json,.json" hidden></section>
       <section class="form-card"><h3>安装到 iPhone</h3><ol class="install-steps"><li>用 Safari 打开已部署的网址。</li><li>点 Safari 的“分享”。</li><li>选择“添加到主屏幕”，打开“作为网页 App 打开”。</li><li>添加后从桌面启动；离线也能记账。</li></ol><button id="install-button" class="primary-button" hidden>安装净记</button><p class="hint">PWA 没有 7 天签名限制。浏览器数据仍可能因卸载或系统清理而丢失，请定期导出备份。</p></section>
       <section class="form-card"><h3>统计规则</h3><p>净消费 = 消费 − 退款 + 计入消费的转出 − 对应收回款。收入单独汇总；子账单只拆分主金额。</p></section>
+      <p id="app-version" class="hint">净记 PWA 1.1.0</p>
     </div>
   </dialog>
 

@@ -36,7 +36,13 @@ export async function loadLedger() {
   return stored ? validateLedger(stored) : emptyLedger();
 }
 
-export async function saveLedger(ledger) { await write("ledger", validateLedger(ledger)); }
+export async function saveLedger(ledger) {
+  const candidate = validateLedger(ledger);
+  const previous = await read("ledger");
+  if (previous && previous.schemaVersion < 3 && !(await read("beforeUpgradeV3"))) await write("beforeUpgradeV3", previous);
+  await write("ledger", candidate);
+}
+export async function loadBeforeUpgrade() { return read("beforeUpgradeV3"); }
 export async function saveBeforeRestore(ledger) { await write("beforeRestore", validateLedger(ledger)); }
 export async function loadBeforeRestore() {
   const stored = await read("beforeRestore");

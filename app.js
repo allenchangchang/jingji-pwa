@@ -1,9 +1,10 @@
 import {
   CHANNELS, EXPENSE_CATEGORIES, INCOME_CATEGORIES, KIND_LABELS, KINDS,
-  backupObject, deleteEntry, formatMoney, moneyInput, monthPeriod, parseMoney,
+  backupObject, billInfo, createBill, deleteEntry, dissolveBill, formatMoney, mergeBills,
+  moneyInput, monthPeriod, parseMoney, renameBill, rootBills, sumAmounts,
   records, remainingCents, returnedCents, saveEntry, summary, today, uuid, validateLedger
 } from "./ledger-core.js";
-import { loadBeforeRestore, loadLedger, requestPersistentStorage, saveBeforeRestore, saveLedger } from "./storage.js";
+import { loadBeforeRestore, loadBeforeUpgrade, loadLedger, requestPersistentStorage, saveBeforeRestore, saveLedger } from "./storage.js";
 
 const $ = selector => document.querySelector(selector);
 const elements = Object.fromEntries([
@@ -16,7 +17,11 @@ const elements = Object.fromEntries([
   "relation-card", "original-label", "entry-original", "original-summary", "detail-editor-list",
   "detail-totals", "allocated-amount", "unallocated-amount", "entry-note", "detail-dialog",
   "entry-detail", "period-dialog", "period-form", "period-start", "period-end", "settings-dialog",
-  "storage-status", "restore-previous", "backup-file", "install-button", "toast"
+  "storage-status", "restore-previous", "backup-file", "install-button", "toast",
+  "select-bills", "merge-selected", "cancel-selection", "merge-status", "merge-dialog",
+  "merge-form", "merge-title", "merge-description", "refund-dialog", "refund-directory",
+  "refund-directory-caption", "enable-multi", "parts-card", "parts-list", "parts-total",
+  "add-amount-part", "legacy-details-card", "export-before-upgrade", "app-version"
 ].map(id => [id, document.getElementById(id)]));
 
 let ledger;
@@ -28,6 +33,15 @@ let defaultAmountCents = null;
 let draftDetails = [];
 let deferredInstallPrompt = null;
 let toastTimer;
+let entryParentID = null;
+let refundScopeIDs = null;
+let amountParts = [];
+let selecting = false;
+let selectionParentID = null;
+let selectedBills = new Set();
+let saving = false;
+let detailTrail = [];
+const infoCache = new Map();
 
 const filterKinds = {
   consumption: ["expense", "refund"], all: KINDS, transfers: ["transferOut", "transferIn"],
@@ -44,6 +58,8 @@ function node(tag, className = "", text = "") {
 function currency(cents, sign = "") { return `${sign}¥${formatMoney(cents)}`; }
 function subentries(entry) { return entry.subentries ?? []; }
 function entryByID(id) { return ledger.entries.find(item => item.id === id); }
+function billByID(id) { return ledger.groups.find(item => item.id === id) ?? entryByID(id); }
+function infoFor(id) { if (!infoCache.has(id)) infoCache.set(id, billInfo(ledger, id)); return infoCache.get(id); }
 function showToast(message) {
   clearTimeout(toastTimer);
   elements.toast.textContent = message;
@@ -59,6 +75,7 @@ function periodLabel() {
 }
 
 function render() {
+  infoCache.clear();
   const result = summary(ledger, period.start, period.end);
   elements["period-title"].textContent = periodLabel();
   elements["net-amount"].textContent = currency(result.net);
@@ -92,16 +109,32 @@ function searchable(entry) {
   return [entry.title, entry.note, entry.category, entry.channel, ...subentries(entry).flatMap(item => [item.title, item.note])].join(" ").toLocaleLowerCase("zh-CN");
 }
 
+function billSearch(item) {
+  return item.childIDs ? [item.title, item.note, ...item.childIDs.map(id => billSearch(billByID(id)))].join(" ").toLocaleLowerCase("zh-CN") : searchable(item);
+}
+
 function renderRecords() {
   const query = elements["search-input"].value.trim().toLocaleLowerCase("zh-CN");
-  const visible = records(ledger, period.start, period.end, filterKinds[elements["record-filter"].value]).filter(item => !query || searchable(item).includes(query));
+  const eligible = new Set(records(ledger, period.start, period.end, filterKinds[elements["record-filter"].value]).map(item => item.id));
+  const visible = rootBills(ledger).flatMap(bill => {
+    const relevant = (bill.childIDs ? infoFor(bill.id).entries : [bill]).filter(entry => eligible.has(entry.id));
+    if (!relevant.length || (query && !billSearch(bill).includes(query))) return [];
+    let day = relevant[0].day;
+    for (const entry of relevant) if (entry.day > day) day = entry.day;
+    return [{ bill, day }];
+  }).sort((a, b) => b.day.localeCompare(a.day) || a.bill.id.localeCompare(b.bill.id));
+  if (selecting && selectionParentID === null) {
+    const visibleIDs = new Set(visible.map(item => item.bill.id));
+    selectedBills = new Set([...selectedBills].filter(id => visibleIDs.has(id)));
+  }
+  updateMergeToolbar();
   elements["record-list"].replaceChildren();
   const grouped = new Map();
-  for (const item of visible) grouped.set(item.day, [...(grouped.get(item.day) ?? []), item]);
+  for (const item of visible) grouped.set(item.day, [...(grouped.get(item.day) ?? []), item.bill]);
   for (const [day, entries] of grouped) {
     elements["record-list"].append(node("div", "day-heading", day));
     const group = node("div", "record-group");
-    for (const entry of entries) group.append(recordRow(entry));
+    for (const entry of entries) group.append(entry.childIDs ? groupRow(entry) : recordRow(entry));
     elements["record-list"].append(group);
   }
   elements["empty-state"].hidden = visible.length !== 0;
@@ -110,10 +143,27 @@ function renderRecords() {
   elements["empty-action"].textContent = ledger.entries.length === 0 ? "导入原生 App 账本" : `查看全部 ${ledger.entries.length} 笔记录`;
 }
 
-function recordRow(entry) {
+function chooseBill(id, parentID) {
+  if (selecting && selectionParentID === parentID) {
+    if (selectedBills.has(id)) selectedBills.delete(id); else selectedBills.add(id);
+    if (parentID) openGroup(parentID); else renderRecords();
+  } else { if (!parentID) detailTrail = []; openDetail(id); }
+}
+
+function selectRow(button, id, parentID) {
+  button.dataset.billId = id;
+  button.addEventListener("click", () => chooseBill(id, parentID));
+  if (selecting && selectionParentID === parentID) {
+    button.classList.add("selectable-row");
+    if (selectedBills.has(id)) button.classList.add("selected-row");
+    button.setAttribute("aria-pressed", String(selectedBills.has(id)));
+  }
+}
+
+function recordRow(entry, parentID = null) {
   const button = node("button", "record-row");
   button.type = "button"; button.dataset.id = entry.id;
-  const icon = node("span", "record-icon", icons[entry.kind]);
+  const icon = node("span", "record-icon", selecting && selectionParentID === parentID ? (selectedBills.has(entry.id) ? "☑" : "☐") : icons[entry.kind]);
   const main = node("span", "record-main");
   main.append(node("span", "record-title", entry.title));
   const meta = entry.kind === "transferOut" ? `转出 · ${entry.countsAsExpense ? "计入消费" : "不计消费"} · ${entry.channel}` :
@@ -125,7 +175,20 @@ function recordRow(entry) {
   const returned = returnedCents(ledger, entry.id);
   if (returned) money.append(node("small", "record-deduction", returned === entry.cents ? (entry.kind === "expense" ? "已全额退款" : "已全部收回") : `已抵扣 ${currency(returned)}`));
   button.append(icon, main, money);
+  selectRow(button, entry.id, parentID);
   return button;
+}
+
+function groupRow(group, parentID = null) {
+  const info = infoFor(group.id), button = node("button", "record-row group-row");
+  button.type = "button"; button.dataset.groupId = group.id;
+  const icon = node("span", "record-icon", selecting && selectionParentID === parentID ? (selectedBills.has(group.id) ? "☑" : "☐") : "▤");
+  const main = node("span", "record-main");
+  main.append(node("span", "record-title", group.title), node("span", "record-meta", `父账单 · ${info.entries.length} 笔记录 · ${info.start} 至 ${info.end}`));
+  main.append(node("span", "record-details", group.childIDs.map(id => billByID(id).title).slice(0, 3).join("、")));
+  const money = node("span", "record-money", currency(info.cents));
+  money.append(node("small", "record-deduction", info.kind === "expense" ? "整单净花费" : "整单合计"));
+  button.append(icon, main, money); selectRow(button, group.id, parentID); return button;
 }
 
 function setSelectOptions(select, values, selected) {
@@ -140,8 +203,9 @@ function setKind(kind) {
 }
 function currentKind() { return new FormData(elements["entry-form"]).get("kind"); }
 
-function openEntry({ entry = null, kind = "expense", original = null } = {}) {
+function openEntry({ entry = null, kind = "expense", original = null, parentID = null, scopeIDs = null } = {}) {
   editingID = entry?.id ?? null;
+  entryParentID = parentID; refundScopeIDs = scopeIDs; amountParts = [];
   defaultAmountCents = null;
   draftDetails = structuredClone(subentries(entry ?? {}));
   elements["entry-form"].reset();
@@ -149,6 +213,10 @@ function openEntry({ entry = null, kind = "expense", original = null } = {}) {
   setKind(actualKind);
   elements["entry-dialog-title"].textContent = entry ? "编辑记录" : "记一笔";
   elements["entry-amount"].value = entry ? moneyInput(entry.cents) : "";
+  elements["entry-amount"].readOnly = false;
+  elements["enable-multi"].hidden = Boolean(entry);
+  elements["enable-multi"].disabled = draftDetails.length > 0;
+  elements["parts-card"].hidden = true; elements["legacy-details-card"].hidden = false;
   elements["entry-title"].value = entry?.title ?? (original ? `${original.title}${original.kind === "expense" ? "退款" : "收回"}` : "");
   elements["entry-day"].value = entry?.day ?? today();
   setSelectOptions(elements["entry-channel"], CHANNELS, entry?.channel ?? original?.channel ?? "其他");
@@ -163,7 +231,7 @@ function openEntry({ entry = null, kind = "expense", original = null } = {}) {
 
 function relationCandidates(kind, editingOriginalID) {
   const expected = kind === "refund" ? "expense" : "transferOut";
-  return ledger.entries.filter(entry => entry.kind === expected && (entry.id === editingOriginalID || remainingCents(ledger, entry, editingID) > 0)).sort((a, b) => b.day.localeCompare(a.day));
+  return ledger.entries.filter(entry => entry.kind === expected && (!refundScopeIDs || kind !== "refund" || refundScopeIDs.includes(entry.id)) && (entry.id === editingOriginalID || remainingCents(ledger, entry, editingID) > 0)).sort((a, b) => b.day.localeCompare(a.day));
 }
 
 function updateEntryForm(kind = currentKind(), requestedCategory = null, requestedOriginalID = null) {
@@ -210,13 +278,60 @@ function updateAmountDefault() {
 }
 
 function effectiveAmount() {
+  if (amountParts.length) {
+    amountParts.forEach((part, index) => { try { parseMoney(part.amount); } catch (error) { throw new Error(`第 ${index + 1} 笔：${error.message}`); } });
+    return sumAmounts(amountParts.map(part => part.amount));
+  }
   const typed = elements["entry-amount"].value.trim();
   if (typed) return parseMoney(typed);
   if (currentKind() === "refund" && defaultAmountCents) return defaultAmountCents;
   throw new Error("请输入金额。");
 }
 
+function enableMultipleAmounts() {
+  if (editingID || draftDetails.length) return;
+  amountParts = [{ id: uuid(), title: "", amount: elements["entry-amount"].value }, { id: uuid(), title: "", amount: "" }];
+  elements["entry-amount"].readOnly = true; elements["enable-multi"].hidden = true;
+  elements["parts-card"].hidden = false; elements["legacy-details-card"].hidden = true;
+  renderAmountParts();
+}
+
+function renderAmountParts(focusLast = false) {
+  elements["parts-list"].replaceChildren();
+  let lastAmount;
+  amountParts.forEach((part, index) => {
+    const row = node("div", "amount-part"); row.dataset.partId = part.id;
+    const name = node("input"); name.value = part.title; name.placeholder = "名称（可选，如酒店）"; name.maxLength = 80;
+    name.setAttribute("aria-label", `第 ${index + 1} 笔名称`);
+    name.addEventListener("input", () => { part.title = name.value; });
+    const amount = node("input"); amount.value = part.amount; amount.placeholder = `第 ${index + 1} 笔金额`; amount.inputMode = "decimal";
+    amount.setAttribute("aria-label", `第 ${index + 1} 笔金额`);
+    amount.addEventListener("input", () => { part.amount = amount.value; updatePartsTotal(); });
+    const remove = node("button", "delete-detail", "×"); remove.type = "button";
+    remove.setAttribute("aria-label", `删除第 ${index + 1} 笔金额`);
+    remove.addEventListener("click", () => {
+      amountParts = amountParts.filter(item => item.id !== part.id);
+      if (!amountParts.length) amountParts.push({ id: uuid(), title: "", amount: "" });
+      renderAmountParts();
+    });
+    row.append(name, amount, remove); elements["parts-list"].append(row); lastAmount = amount;
+  });
+  elements["add-amount-part"].disabled = amountParts.length >= 100;
+  updatePartsTotal(); if (focusLast) lastAmount?.focus();
+}
+
+function updatePartsTotal() {
+  const valid = amountParts.filter(part => { try { parseMoney(part.amount); return true; } catch { return false; } });
+  try {
+    const total = valid.length ? sumAmounts(valid.map(part => part.amount)) : 0;
+    elements["entry-amount"].value = total ? moneyInput(total) : "";
+    elements["parts-total"].textContent = `已填写 ${valid.length}/${amountParts.length} 笔 · 合计 ${currency(total)}${valid.length < amountParts.length ? "，请补齐每笔金额" : ""}`;
+  } catch (error) { elements["entry-amount"].value = ""; elements["parts-total"].textContent = error.message; }
+  updateDetailTotals();
+}
+
 function renderDetailEditor() {
+  elements["enable-multi"].disabled = draftDetails.length > 0;
   elements["detail-editor-list"].replaceChildren();
   for (const detail of draftDetails) {
     const row = node("div", "detail-editor"); row.dataset.id = detail.id;
@@ -262,10 +377,15 @@ async function submitEntry(event) {
       countsAsExpense: kind === "transferOut" && elements["counts-as-expense"].checked,
       ...(originalID ? { originalID } : {}), ...(draftDetails.length ? { subentries: draftDetails.map(detail => ({ ...detail })) } : {})
     };
-    ledger = saveEntry(ledger, candidate);
-    await saveLedger(ledger);
+    let groupID = null;
+    if (amountParts.length) {
+      groupID = uuid();
+      const entries = amountParts.map((part, index) => ({ ...candidate, id: part.id, cents: parseMoney(part.amount), title: part.title.trim() || `第 ${index + 1} 笔金额`, note: "" }));
+      await commitLedger(createBill(ledger, { id: groupID, title: candidate.title, note: candidate.note, entries, parentID: entryParentID }));
+    } else await commitLedger(saveEntry(ledger, candidate, entryParentID));
     elements["entry-dialog"].close();
-    render(); showToast(editingID ? "记录已更新" : "已记一笔");
+    if (groupID) openGroup(groupID);
+    showToast(editingID ? "记录已更新" : "已记一笔");
   } catch (error) { alert(error.message); }
 }
 
@@ -280,7 +400,9 @@ function detailLine(label, value) {
 }
 
 function openDetail(id) {
+  if (ledger.groups.some(group => group.id === id)) return openGroup(id);
   const entry = entryByID(id); if (!entry) return;
+  if (detailTrail.at(-1) !== id) detailTrail.push(id);
   const container = elements["entry-detail"]; container.replaceChildren();
   const hero = node("section", "detail-hero");
   hero.append(node("p", "card-label", KIND_LABELS[entry.kind]), node("p", "section-amount", currency(entry.cents)), node("h3", "", entry.title));
@@ -316,11 +438,120 @@ function openDetail(id) {
   const edit = node("button", "secondary-button", "编辑记录"); edit.addEventListener("click", () => { elements["detail-dialog"].close(); openEntry({ entry }); });
   const remove = node("button", "secondary-button danger-button", "删除记录"); remove.addEventListener("click", async () => {
     if (!confirm("删除这笔记录？统计会立即重新计算。")) return;
-    try { ledger = deleteEntry(ledger, entry.id); await saveLedger(ledger); elements["detail-dialog"].close(); render(); showToast("记录已删除"); }
+    try { await commitLedger(deleteEntry(ledger, entry.id)); elements["detail-dialog"].close(); showToast("记录已删除"); }
     catch (error) { alert(error.message); }
   });
   actions.append(edit, remove); container.append(actions);
   elements["detail-dialog"].showModal();
+}
+
+async function commitLedger(candidate) {
+  if (saving) throw new Error("正在保存账本，请稍候。");
+  saving = true;
+  try { await saveLedger(candidate); ledger = candidate; render(); }
+  finally { saving = false; }
+}
+
+function actionButton(label, callback, primary = false) {
+  const button = node("button", primary ? "primary-button" : "secondary-button", label); button.type = "button";
+  button.addEventListener("click", async () => { try { await callback(); } catch (error) { alert(error.message); } });
+  return button;
+}
+
+function openGroup(id) {
+  const group = ledger.groups.find(item => item.id === id); if (!group) return;
+  if (detailTrail.at(-1) !== id) detailTrail.push(id);
+  const info = infoFor(id), container = elements["entry-detail"]; container.replaceChildren();
+  const hero = node("section", "detail-hero");
+  hero.append(node("p", "card-label", `父账单 · ${info.kind === "expense" ? "净花费" : KIND_LABELS[info.kind] + "合计"}`), node("p", "section-amount", currency(info.cents)), node("h3", "", group.title));
+  hero.append(node("p", "hint", `${info.entries.length} 笔记录 · ${info.start} 至 ${info.end} · 按各笔原日期统计`));
+  if (info.kind === "expense") hero.append(node("p", "hint", `消费原额 ${currency(info.grossCents)} − 已关联退款 ${currency(info.refundCents)}`));
+  if (group.note) hero.append(node("p", "hint", group.note));
+  container.append(hero);
+  if (info.entries.some(entry => entry.kind === "expense" && remainingCents(ledger, entry) > 0)) container.append(actionButton("退款", () => openRefundDirectory(id), true));
+  container.append(node("h3", "directory-heading", "子账单目录"));
+  const children = node("section", "detail-list");
+  for (const childID of group.childIDs) {
+    const child = billByID(childID);
+    children.append(child.childIDs ? groupRow(child, id) : recordRow(child, id));
+  }
+  container.append(children);
+  const expenseIDs = new Set(info.entries.filter(entry => entry.kind === "expense").map(entry => entry.id));
+  const inside = new Set(info.entries.map(entry => entry.id));
+  const otherRefunds = ledger.entries.filter(entry => entry.kind === "refund" && expenseIDs.has(entry.originalID) && !inside.has(entry.id));
+  if (otherRefunds.length) {
+    container.append(node("h3", "directory-heading", "其他关联退款（已计入净额）"));
+    const list = node("section", "detail-list");
+    for (const refund of otherRefunds) list.append(detailLine(refund.title, `${refund.day} · ${currency(refund.cents)}`));
+    container.append(list);
+  }
+  const actions = node("div", "button-stack");
+  if (selecting && selectionParentID === id) {
+    const merge = actionButton(`合并所选 ${selectedBills.size} 项`, beginMerge, true); merge.disabled = selectedBills.size < 2;
+    actions.append(merge, actionButton("取消选择", () => { finishSelection(); openGroup(id); }));
+  } else {
+    actions.append(actionButton("添加子账单", () => { elements["detail-dialog"].close(); openEntry({ parentID: id, kind: info.kind }); }));
+    if (group.childIDs.length > 1) actions.append(actionButton("选择子账单继续合并", () => { selecting = true; selectionParentID = id; selectedBills.clear(); openGroup(id); }));
+    actions.append(actionButton("重命名父账单", async () => {
+      const title = prompt("父账单名称", group.title); if (title === null) return;
+      await commitLedger(renameBill(ledger, id, title)); openGroup(id);
+    }));
+    actions.append(actionButton("取消这一级合并（保留所有记录）", async () => {
+      if (!confirm("拆开这一级父账单？所有原记录和退款关系都会保留。")) return;
+      await commitLedger(dissolveBill(ledger, id)); detailTrail = []; elements["detail-dialog"].close(); finishSelection(); showToast("已取消合并，原记录保留");
+    }));
+  }
+  container.append(actions); elements["detail-dialog"].showModal();
+}
+
+function openRefundDirectory(id) {
+  const group = billByID(id), entries = infoFor(id).entries;
+  const eligible = entries.filter(entry => entry.kind === "expense" && remainingCents(ledger, entry) > 0);
+  const ids = eligible.map(entry => entry.id), allowed = new Set(ids);
+  elements["refund-directory"].replaceChildren();
+  elements["refund-directory-caption"].textContent = `${group.title} · 点击要退款的子消费`;
+  function visit(item, path) {
+    if (item.childIDs) { for (const childID of item.childIDs) visit(billByID(childID), [...path, item.title]); return; }
+    if (!allowed.has(item.id)) return;
+    const button = actionButton(item.title, () => {
+      elements["refund-dialog"].close(); elements["detail-dialog"].close();
+      openEntry({ original: item, scopeIDs: ids });
+    });
+    button.classList.add("refund-choice"); button.dataset.refundId = item.id;
+    button.append(node("small", "", `${path.join(" › ")} · ${item.day}`), node("small", "", `剩余可退 ${currency(remainingCents(ledger, item))}`));
+    elements["refund-directory"].append(button);
+  }
+  visit(group, []);
+  if (!eligible.length) elements["refund-directory"].append(node("p", "hint", "此账单的消费已全部退完。"));
+  elements["refund-dialog"].showModal();
+}
+
+function updateMergeToolbar() {
+  const active = selecting && selectionParentID === null;
+  elements["select-bills"].hidden = active;
+  elements["select-bills"].disabled = rootBills(ledger).length < 2;
+  elements["merge-selected"].hidden = !active; elements["cancel-selection"].hidden = !active;
+  elements["merge-status"].hidden = !active;
+  elements["merge-status"].textContent = `已选 ${selectedBills.size} 项`;
+  elements["merge-selected"].disabled = selectedBills.size < 2;
+}
+
+function finishSelection() { selecting = false; selectionParentID = null; selectedBills.clear(); renderRecords(); }
+
+function beginMerge() {
+  if (selectedBills.size < 2) return;
+  elements["merge-title"].value = billByID([...selectedBills][0]).title;
+  elements["merge-description"].textContent = `合并 ${selectedBills.size} 项，保留每笔日期、金额和退款关系。消费与关联退款显示净额。`;
+  elements["merge-dialog"].showModal();
+}
+
+async function submitMerge(event) {
+  event.preventDefault();
+  try {
+    const id = uuid();
+    await commitLedger(mergeBills(ledger, [...selectedBills], elements["merge-title"].value, id));
+    elements["merge-dialog"].close(); finishSelection(); openGroup(id); showToast("已合并，原记录完整保留");
+  } catch (error) { alert(error.message); }
 }
 
 function changeMonth(offset) {
@@ -331,7 +562,7 @@ function changeMonth(offset) {
 }
 
 function downloadBackup(object, filename) {
-  const blob = new Blob([JSON.stringify(backupObject(object), null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify(object.schemaVersion < 3 ? object : backupObject(object), null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -357,26 +588,42 @@ async function importBackup(file) {
   if (file.size > 64 * 1024 * 1024) throw new Error("文件超过 64 MB，无法读取。");
   const candidate = validateLedger(JSON.parse(await file.text()));
   if (!confirm(`备份包含 ${candidate.entries.length} 笔记录，将完整替换当前账本。继续吗？`)) return;
-  await saveBeforeRestore(ledger); await saveLedger(candidate); ledger = candidate;
-  showAllRecords(); elements["settings-dialog"].close();
+  await saveBeforeRestore(ledger); await commitLedger(candidate);
+  finishSelection(); showAllRecords(); elements["settings-dialog"].close();
   elements["restore-previous"].hidden = false; showToast(`已恢复 ${candidate.entries.length} 笔记录`);
 }
 
 function registerEvents() {
   document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => closeDialog(button.dataset.close)));
+  $("#detail-back").addEventListener("click", () => {
+    finishSelection(); detailTrail.pop();
+    if (detailTrail.length && billByID(detailTrail.at(-1))) openDetail(detailTrail.at(-1));
+    else { detailTrail = []; elements["detail-dialog"].close(); }
+  });
+  elements["select-bills"].addEventListener("click", () => { selecting = true; selectionParentID = null; selectedBills.clear(); renderRecords(); });
+  elements["cancel-selection"].addEventListener("click", finishSelection);
+  elements["merge-selected"].addEventListener("click", beginMerge);
+  elements["merge-form"].addEventListener("submit", submitMerge);
+  elements["enable-multi"].addEventListener("click", enableMultipleAmounts);
+  elements["add-amount-part"].addEventListener("click", () => {
+    if (amountParts.length >= 100) return;
+    amountParts.push({ id: uuid(), title: "", amount: "" }); renderAmountParts(true);
+  });
   $("#previous-month").addEventListener("click", () => changeMonth(-1));
   $("#next-month").addEventListener("click", () => changeMonth(1));
   $("#period-button").addEventListener("click", () => { elements["period-start"].value = period.start; elements["period-end"].value = period.end; elements["period-dialog"].showModal(); });
   $("#use-this-month").addEventListener("click", () => { const value = monthPeriod(); elements["period-start"].value = value.start; elements["period-end"].value = value.end; });
   $("#use-last-month").addEventListener("click", () => { const current = today().slice(0, 7); const [year, month] = current.split("-").map(Number); const date = new Date(Date.UTC(year, month - 2, 1)); const value = monthPeriod(`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`); elements["period-start"].value = value.start; elements["period-end"].value = value.end; });
   elements["period-form"].addEventListener("submit", event => { event.preventDefault(); const start = elements["period-start"].value, end = elements["period-end"].value; if (start > end) return alert("结束日期不能早于开始日期。"); period = { start, end }; customPeriod = true; elements["period-dialog"].close(); render(); });
-  $("#add-entry").addEventListener("click", () => openEntry());
+  $("#add-entry").addEventListener("click", () => { finishSelection(); detailTrail = []; openEntry(); });
   elements["empty-action"].addEventListener("click", () => { if (ledger.entries.length) showAllRecords(); else elements["backup-file"].click(); });
-  $("#settings-button").addEventListener("click", () => elements["settings-dialog"].showModal());
+  $("#settings-button").addEventListener("click", async () => {
+    try { elements["export-before-upgrade"].hidden = !(await loadBeforeUpgrade()); elements["settings-dialog"].showModal(); }
+    catch (error) { alert(error.message); }
+  });
   $("#show-income").addEventListener("click", () => { elements["record-filter"].value = "income"; elements["search-input"].value = ""; renderRecords(); document.querySelector(".records-section").scrollIntoView({ behavior: "smooth" }); });
   elements["record-filter"].addEventListener("change", renderRecords);
   elements["search-input"].addEventListener("input", renderRecords);
-  elements["record-list"].addEventListener("click", event => { const row = event.target.closest(".record-row"); if (row) openDetail(row.dataset.id); });
   elements["entry-form"].addEventListener("submit", submitEntry);
   elements["entry-form"].querySelectorAll("input[name=kind]").forEach(radio => radio.addEventListener("change", () => { defaultAmountCents = null; updateEntryForm(radio.value); renderDetailEditor(); }));
   elements["entry-original"].addEventListener("change", updateOriginalSummary);
@@ -387,7 +634,18 @@ function registerEvents() {
   $("#export-backup").addEventListener("click", () => { downloadBackup(ledger, `净记备份-${today()}.json`); showToast("备份已导出"); });
   $("#import-backup").addEventListener("click", () => elements["backup-file"].click());
   elements["backup-file"].addEventListener("change", async () => { try { await importBackup(elements["backup-file"].files[0]); } catch (error) { alert(error.message); } finally { elements["backup-file"].value = ""; } });
-  elements["restore-previous"].addEventListener("click", async () => { const previous = await loadBeforeRestore(); if (!previous || !confirm("恢复上次导入前的账本？当前账本将被替换。")) return; await saveLedger(previous); ledger = previous; showAllRecords(); elements["settings-dialog"].close(); showToast("已恢复上次导入前账本"); });
+  elements["restore-previous"].addEventListener("click", async () => {
+    try {
+      const previous = await loadBeforeRestore(); if (!previous || !confirm("恢复上次导入前的账本？当前账本将被替换。")) return;
+      await commitLedger(previous); finishSelection(); showAllRecords(); elements["settings-dialog"].close(); showToast("已恢复上次导入前账本");
+    } catch (error) { alert(error.message); }
+  });
+  elements["export-before-upgrade"].addEventListener("click", async () => {
+    try {
+      const previous = await loadBeforeUpgrade(); if (!previous) return alert("没有保存的升级前账本。");
+      downloadBackup(previous, `净记升级前备份-${today()}.json`); showToast("升级前账本已导出");
+    } catch (error) { alert(error.message); }
+  });
   elements["install-button"].addEventListener("click", async () => { if (!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; elements["install-button"].hidden = true; });
   window.addEventListener("beforeinstallprompt", event => { event.preventDefault(); deferredInstallPrompt = event; elements["install-button"].hidden = false; });
   window.addEventListener("online", updateConnectivity); window.addEventListener("offline", updateConnectivity);
@@ -403,6 +661,8 @@ async function start() {
     elements["restore-previous"].hidden = !(await loadBeforeRestore());
     const persisted = await requestPersistentStorage();
     elements["storage-status"].textContent = persisted ? "账本只保存在此设备，浏览器已允许持久存储。" : "账本只保存在此设备；请定期导出备份，防止卸载或系统清理造成丢失。";
+    elements["export-before-upgrade"].hidden = !(await loadBeforeUpgrade());
+    elements["app-version"].textContent = "净记 PWA 1.1.0";
     if ("serviceWorker" in navigator) await navigator.serviceWorker.register("./sw.js", { scope: "./" });
   } catch (error) {
     document.body.replaceChildren(node("main", "empty-state", `账本无法读取：${error.message}`));

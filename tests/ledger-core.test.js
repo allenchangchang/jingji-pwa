@@ -74,7 +74,7 @@ test("blank-default UI flow can save partial then remaining full refund", () => 
 test("native v1 backups migrate and v2 backups round-trip", () => {
   const old = { schemaVersion: 1, entries: [entry(ids[0], "expense", 100, "2026-09-12")] };
   const migrated = validateLedger(old);
-  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.schemaVersion, 3);
   assert.deepEqual(backupObject(migrated), migrated);
 });
 
