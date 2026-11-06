@@ -76,6 +76,7 @@
         <div class="empty-icon">✎</div>
         <h3 id="empty-title">从第一笔开始，记清每一分</h3>
         <p id="empty-text">收入、消费和往来分开记，净消费自动算。</p>
+        <button id="empty-action" type="button" class="secondary-button">导入原生 App 账本</button>
       </div>
     </section>
   </main>
@@ -140,7 +141,7 @@
   <dialog id="settings-dialog" class="sheet-dialog">
     <div class="dialog-header"><button type="button" data-close="settings-dialog" class="text-button">完成</button><h2>设置</h2><span></span></div>
     <div class="dialog-body">
-      <section class="form-card"><h3>数据与备份</h3><p id="storage-status" class="hint">账本只保存在此设备。</p><div class="button-stack"><button id="export-backup" class="secondary-button">导出 JSON 备份</button><button id="import-backup" class="secondary-button">从原生版或 PWA 备份恢复</button><button id="restore-previous" class="secondary-button" hidden>恢复上次导入前账本</button></div><input id="backup-file" type="file" accept="application/json,.json" hidden></section>
+      <section class="form-card"><h3>数据与备份</h3><p id="storage-status" class="hint">账本只保存在此设备。</p><p class="hint">迁移旧记录：原生净记 → 设置 → 导出账本备份，保存到“文件”；再在这里选择该 JSON。导入成功后会展示全部日期和类型的记录。</p><div class="button-stack"><button id="export-backup" class="secondary-button">导出 JSON 备份</button><button id="import-backup" class="secondary-button">从原生版或 PWA 备份恢复</button><button id="restore-previous" class="secondary-button" hidden>恢复上次导入前账本</button></div><input id="backup-file" type="file" accept="application/json,.json" hidden></section>
       <section class="form-card"><h3>安装到 iPhone</h3><ol class="install-steps"><li>用 Safari 打开已部署的网址。</li><li>点 Safari 的“分享”。</li><li>选择“添加到主屏幕”，打开“作为网页 App 打开”。</li><li>添加后从桌面启动；离线也能记账。</li></ol><button id="install-button" class="primary-button" hidden>安装净记</button><p class="hint">PWA 没有 7 天签名限制。浏览器数据仍可能因卸载或系统清理而丢失，请定期导出备份。</p></section>
       <section class="form-card"><h3>统计规则</h3><p>净消费 = 消费 − 退款 + 计入消费的转出 − 对应收回款。收入单独汇总；子账单只拆分主金额。</p></section>
     </div>

@@ -1,4 +1,4 @@
-const CACHE = "jingji-pwa-1.0.0";
+const CACHE = "jingji-pwa-1.0.1";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./ledger-core.js", "./storage.js", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png"];
 
 self.addEventListener("install", event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting())));

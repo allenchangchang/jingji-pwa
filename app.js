@@ -10,7 +10,7 @@ const elements = Object.fromEntries([
   "offline-banner", "period-title", "net-amount", "purchase-amount", "refund-amount",
   "marked-transfer-line", "marked-transfer-amount", "recovery-line", "recovery-amount",
   "income-amount", "categories-card", "category-list", "record-filter", "search-input",
-  "record-list", "empty-state", "empty-title", "empty-text", "entry-dialog", "entry-form",
+  "record-list", "empty-state", "empty-title", "empty-text", "empty-action", "entry-dialog", "entry-form",
   "entry-dialog-title", "entry-amount", "refund-default-hint", "entry-title", "entry-day",
   "entry-channel", "entry-category", "category-row", "counts-row", "counts-as-expense",
   "relation-card", "original-label", "entry-original", "original-summary", "detail-editor-list",
@@ -106,7 +106,8 @@ function renderRecords() {
   }
   elements["empty-state"].hidden = visible.length !== 0;
   elements["empty-title"].textContent = ledger.entries.length === 0 ? "从第一笔开始，记清每一分" : "当前筛选下没有流水";
-  elements["empty-text"].textContent = ledger.entries.length === 0 ? "收入、消费和往来分开记，净消费自动算。" : "试试其他日期、类型，或清空搜索。";
+  elements["empty-text"].textContent = ledger.entries.length === 0 ? "原生 App 的旧记录需先在原生净记的设置中导出 JSON 备份，再在这里导入。" : `账本共 ${ledger.entries.length} 笔记录，当前日期、类型或搜索条件下没有匹配记录。`;
+  elements["empty-action"].textContent = ledger.entries.length === 0 ? "导入原生 App 账本" : `查看全部 ${ledger.entries.length} 笔记录`;
 }
 
 function recordRow(entry) {
@@ -335,12 +336,29 @@ function downloadBackup(object, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function showAllRecords() {
+  if (ledger.entries.length) {
+    let start = ledger.entries[0].day, end = start;
+    for (const entry of ledger.entries) {
+      if (entry.day < start) start = entry.day;
+      if (entry.day > end) end = entry.day;
+    }
+    period = { start, end }; activeMonth = end.slice(0, 7); customPeriod = true;
+  } else {
+    activeMonth = today().slice(0, 7); period = monthPeriod(activeMonth); customPeriod = false;
+  }
+  elements["record-filter"].value = "all";
+  elements["search-input"].value = "";
+  render();
+}
+
 async function importBackup(file) {
   if (!file) return;
   if (file.size > 64 * 1024 * 1024) throw new Error("文件超过 64 MB，无法读取。");
   const candidate = validateLedger(JSON.parse(await file.text()));
   if (!confirm(`备份包含 ${candidate.entries.length} 笔记录，将完整替换当前账本。继续吗？`)) return;
-  await saveBeforeRestore(ledger); await saveLedger(candidate); ledger = candidate; render();
+  await saveBeforeRestore(ledger); await saveLedger(candidate); ledger = candidate;
+  showAllRecords(); elements["settings-dialog"].close();
   elements["restore-previous"].hidden = false; showToast(`已恢复 ${candidate.entries.length} 笔记录`);
 }
 
@@ -353,6 +371,7 @@ function registerEvents() {
   $("#use-last-month").addEventListener("click", () => { const current = today().slice(0, 7); const [year, month] = current.split("-").map(Number); const date = new Date(Date.UTC(year, month - 2, 1)); const value = monthPeriod(`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`); elements["period-start"].value = value.start; elements["period-end"].value = value.end; });
   elements["period-form"].addEventListener("submit", event => { event.preventDefault(); const start = elements["period-start"].value, end = elements["period-end"].value; if (start > end) return alert("结束日期不能早于开始日期。"); period = { start, end }; customPeriod = true; elements["period-dialog"].close(); render(); });
   $("#add-entry").addEventListener("click", () => openEntry());
+  elements["empty-action"].addEventListener("click", () => { if (ledger.entries.length) showAllRecords(); else elements["backup-file"].click(); });
   $("#settings-button").addEventListener("click", () => elements["settings-dialog"].showModal());
   $("#show-income").addEventListener("click", () => { elements["record-filter"].value = "income"; elements["search-input"].value = ""; renderRecords(); document.querySelector(".records-section").scrollIntoView({ behavior: "smooth" }); });
   elements["record-filter"].addEventListener("change", renderRecords);
@@ -368,7 +387,7 @@ function registerEvents() {
   $("#export-backup").addEventListener("click", () => { downloadBackup(ledger, `净记备份-${today()}.json`); showToast("备份已导出"); });
   $("#import-backup").addEventListener("click", () => elements["backup-file"].click());
   elements["backup-file"].addEventListener("change", async () => { try { await importBackup(elements["backup-file"].files[0]); } catch (error) { alert(error.message); } finally { elements["backup-file"].value = ""; } });
-  elements["restore-previous"].addEventListener("click", async () => { const previous = await loadBeforeRestore(); if (!previous || !confirm("恢复上次导入前的账本？当前账本将被替换。")) return; await saveLedger(previous); ledger = previous; render(); showToast("已恢复上次导入前账本"); });
+  elements["restore-previous"].addEventListener("click", async () => { const previous = await loadBeforeRestore(); if (!previous || !confirm("恢复上次导入前的账本？当前账本将被替换。")) return; await saveLedger(previous); ledger = previous; showAllRecords(); elements["settings-dialog"].close(); showToast("已恢复上次导入前账本"); });
   elements["install-button"].addEventListener("click", async () => { if (!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; elements["install-button"].hidden = true; });
   window.addEventListener("beforeinstallprompt", event => { event.preventDefault(); deferredInstallPrompt = event; elements["install-button"].hidden = false; });
   window.addEventListener("online", updateConnectivity); window.addEventListener("offline", updateConnectivity);
